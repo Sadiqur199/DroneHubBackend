@@ -1,0 +1,25 @@
+# Composer / Node dependencies (installed inside the image)
+/vendor
+/node_modules
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Laravel runtime artefacts
+/storage/framework/cache/data
+/storage/framework/sessions
+/storage/framework/views
+/storage/logs
+/bootstrap/cache/*.php
+/public/build
+/public/hot
+
+# Tooling
+/.phpunit.cache
+.phpunit.result.cache
+/.git
+/.gitignore
+/.dockerignore
+README.md
