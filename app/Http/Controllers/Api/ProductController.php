@@ -3,316 +3,766 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\CatalogService;
+use App\Services\PricingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class ProductController extends Controller
 {
     /**
-     * Get all products with category filtering, search, and type filters
+     * Catalogue for the requesting customer group.
+     * Retail / wholesale / agent each only receive their own products & prices.
      */
     public function index(Request $request)
     {
-        $category = $request->query('category', 'all');
-        $type = $request->query('type');
-        $search = $request->query('search');
+        $groupId = $this->groupId($request);
+        $isAdmin = $this->isAdmin($request);
 
-        $query = DB::table('dealer_products')
-            ->leftJoin('product_categories', 'dealer_products.category_id', '=', 'product_categories.id')
-            ->select(
-                'dealer_products.id',
-                'dealer_products.name',
-                'dealer_products.price',
-                'dealer_products.price_dealer_a',
-                'dealer_products.price_dealer_b',
-                'dealer_products.stock',
-                'dealer_products.image_url',
-                'dealer_products.status',
-                'dealer_products.created_at',
-                'product_categories.name as category_name',
-                'product_categories.code as category_code'
-            );
-
-        if ($search) {
-            $query->where('dealer_products.name', 'like', "%{$search}%");
-        }
-
-        if ($category && $category !== 'all') {
-            $query->where(function ($q) use ($category) {
-                $q->where('product_categories.code', $category)
-                  ->orWhere('product_categories.name', 'like', "%{$category}%")
-                  ->orWhere('dealer_products.name', 'like', "%{$category}%");
-            });
-        }
-
-        $items = $query->orderBy('dealer_products.id', 'desc')->get();
-
-        // Also fetch drones for complete catalog experience
-        $drones = DB::table('drones')->get();
-
-        $formattedProducts = $items->map(function ($item) {
-            $priceCents = (int) round(($item->price > 0 ? $item->price : ($item->price_dealer_a ?: 1500)) * 100);
-            return [
-                'id'            => 'p-' . $item->id,
-                'raw_id'        => $item->id,
-                'type'          => 'part',
-                'name'          => $item->name,
-                'sku'           => 'DH-SKU-' . str_pad($item->id, 4, '0', STR_PAD_LEFT),
-                'price_cents'   => $priceCents,
-                'price_formatted' => '$' . number_format($priceCents / 100, 2),
-                'stock'         => $item->stock,
-                'stock_status'  => $item->stock > 0 ? 'In Stock' : 'Out of Stock',
-                'image_url'     => $this->resolveImageUrl($item->image_url),
-                'category'      => $item->category_name ?: 'General Parts',
-                'status'        => $item->status,
-                'created_at'    => $item->created_at,
-            ];
-        });
-
-        // Map drones into products list
-        $formattedDrones = $drones->map(function ($drone) {
-            $priceCents = $drone->model_code === 'T100' ? 3850000 : 2950000;
-            return [
-                'id'            => 'd-' . $drone->id,
-                'raw_id'        => $drone->id,
-                'type'          => 'drone',
-                'name'          => $drone->model_name,
-                'sku'           => 'DH-DRN-' . $drone->model_code,
-                'price_cents'   => $priceCents,
-                'price_formatted' => '$' . number_format($priceCents / 100, 2),
-                'stock'         => 12,
-                'stock_status'  => 'In Stock',
-                'image_url'     => $this->resolveImageUrl($drone->image_url),
-                'category'      => 'Agricultural Drone',
-                'status'        => 'active',
-                'specs'         => json_decode($drone->specs, true) ?: [],
-                'accessories'   => json_decode($drone->accessories, true) ?: [],
-                'created_at'    => $drone->created_at,
-            ];
-        });
-
-        $merged = $formattedDrones->concat($formattedProducts);
-
-        if ($type === 'drone') {
-            $merged = $formattedDrones;
-        } elseif ($type === 'part') {
-            $merged = $formattedProducts;
-        }
+        $items = CatalogService::listFor($request, $groupId, $isAdmin);
 
         return response()->json([
             'success' => true,
-            'count'   => $merged->count(),
-            'data'    => $merged->values()
+            'count'   => count($items),
+            'group'   => $request->attributes->get('customer_group_slug', 'retail'),
+            'data'    => $items,
         ]);
     }
 
     /**
-     * Get single product details
+     * Single product detail.
      */
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        if (str_starts_with($id, 'd-') || is_numeric($id)) {
-            $droneId = str_replace('d-', '', $id);
-            $drone = DB::table('drones')->where('id', $droneId)->first();
-            if ($drone) {
-                // Fetch linked parts for this drone
-                $parts = DB::table('parts')->where('drone_id', $drone->id)->get()->map(function($p) {
-                    $cents = (int) round($p->price * 100);
-                    return [
-                        'id' => 'pt-' . $p->id,
-                        'name' => $p->name,
-                        'section' => $p->section_title,
-                        'price_cents' => $cents,
-                        'price_formatted' => '$' . number_format($cents / 100, 2),
-                        'stock' => $p->stock_count,
-                        'image_url' => $this->resolveImageUrl($p->image_url),
-                    ];
-                });
-
-                $priceCents = $drone->model_code === 'T100' ? 3850000 : 2950000;
-                return response()->json([
-                    'success' => true,
-                    'data'    => [
-                        'id'            => 'd-' . $drone->id,
-                        'raw_id'        => $drone->id,
-                        'type'          => 'drone',
-                        'name'          => $drone->model_name,
-                        'model_code'    => $drone->model_code,
-                        'sku'           => 'DH-DRN-' . $drone->model_code,
-                        'price_cents'   => $priceCents,
-                        'price_formatted' => '$' . number_format($priceCents / 100, 2),
-                        'stock'         => 12,
-                        'stock_status'  => 'In Stock',
-                        'image_url'     => $this->resolveImageUrl($drone->image_url),
-                        'parts_image_url' => $this->resolveImageUrl($drone->parts_image_url),
-                        'warranty_status' => $drone->warranty_status,
-                        'flight_hours'  => $drone->flight_hours,
-                        'battery_sets'  => $drone->battery_sets,
-                        'specs'         => json_decode($drone->specs, true) ?: [],
-                        'accessories'   => json_decode($drone->accessories, true) ?: [],
-                        'technical_specs' => json_decode($drone->technical_specifications, true) ?: [],
-                        'compatible_parts' => $parts,
-                    ]
-                ]);
-            }
-        }
-
-        // Check dealer_products
         $cleanId = str_replace('p-', '', $id);
-        $product = DB::table('dealer_products')
-            ->leftJoin('product_categories', 'dealer_products.category_id', '=', 'product_categories.id')
-            ->where('dealer_products.id', $cleanId)
-            ->select('dealer_products.*', 'product_categories.name as category_name')
+        $groupId = $this->groupId($request);
+        $isAdmin = $this->isAdmin($request);
+
+        $product = DB::table('products')
+            ->leftJoin('categories', 'products.category_id', '=', 'categories.id')
+            ->where('products.id', $cleanId)
+            ->whereNull('products.deleted_at')
+            ->select('products.*', 'categories.name as category_name', 'categories.slug as category_slug')
             ->first();
 
-        if ($product) {
-            $priceCents = (int) round(($product->price > 0 ? $product->price : ($product->price_dealer_a ?: 1500)) * 100);
-            return response()->json([
-                'success' => true,
-                'data'    => [
-                    'id'            => 'p-' . $product->id,
-                    'raw_id'        => $product->id,
-                    'type'          => 'part',
-                    'name'          => $product->name,
-                    'sku'           => 'DH-SKU-' . str_pad($product->id, 4, '0', STR_PAD_LEFT),
-                    'price_cents'   => $priceCents,
-                    'price_formatted' => '$' . number_format($priceCents / 100, 2),
-                    'stock'         => $product->stock,
-                    'stock_status'  => $product->stock > 0 ? 'In Stock' : 'Out of Stock',
-                    'image_url'     => $this->resolveImageUrl($product->image_url),
-                    'category'      => $product->category_name ?: 'Genuine Parts',
-                    'status'        => $product->status,
-                ]
-            ]);
+        if (!$product) {
+            return response()->json(['success' => false, 'message' => 'Product not found'], 404);
         }
 
-        return response()->json(['success' => false, 'message' => 'Product not found'], 404);
+        $variant = DB::table('product_variants')
+            ->where('product_id', $product->id)
+            ->whereNull('deleted_at')
+            ->orderBy('sort')
+            ->orderBy('id')
+            ->first();
+
+        if (!$variant) {
+            return response()->json(['success' => false, 'message' => 'Product not found'], 404);
+        }
+
+        $price = PricingService::priceFor($variant->id, $groupId);
+
+        if (!$price && !$isAdmin) {
+            // This product is not offered to the caller's group.
+            return response()->json(['success' => false, 'message' => 'Product not found'], 404);
+        }
+
+        if (!$price) {
+            $any = PricingService::pricesForVariant($variant->id);
+            $price = $any ? reset($any) : [
+                'price_cents'          => 0,
+                'original_price_cents' => 0,
+                'gst_cents'            => 0,
+                'is_sale'              => false,
+            ];
+        }
+
+        $droneNames = $product->drone_id
+            ? DB::table('products')->where('id', $product->drone_id)->pluck('name', 'id')
+            : collect();
+
+        $payload = CatalogService::format($product, $variant, $price, $groupId, $isAdmin, $droneNames);
+
+        // Related parts for drones
+        if ($payload['type'] === 'drone') {
+            $payload['compatible_parts'] = DB::table('products')
+                ->where('drone_id', $product->id)
+                ->whereNull('deleted_at')
+                ->get()
+                ->map(function ($part) use ($groupId) {
+                    $variantId = DB::table('product_variants')
+                        ->where('product_id', $part->id)
+                        ->whereNull('deleted_at')
+                        ->orderBy('id')
+                        ->value('id');
+
+                    $price = $variantId ? PricingService::priceFor($variantId, $groupId) : null;
+
+                    return [
+                        'id'             => 'p-' . $part->id,
+                        'name'           => $part->name,
+                        'section'        => $part->subcategory ?: 'General',
+                        'price_cents'    => $price['price_cents'] ?? null,
+                        'price_formatted' => isset($price['price_cents'])
+                            ? PricingService::formatAud($price['price_cents'])
+                            : null,
+                    ];
+                })->values();
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => $payload,
+        ]);
     }
 
     /**
-     * Admin create/upload new product
+     * Admin create a product (drone / part / accessory / combo).
      */
     public function store(Request $request)
     {
+        $validated = $this->validateProduct($request);
+
+        if ($validated instanceof \Illuminate\Http\JsonResponse) {
+            return $validated;
+        }
+
+        $productId = DB::transaction(function () use ($request, $validated) {
+            $categoryId = $this->resolveCategoryId($validated['category']);
+
+            $productId = DB::table('products')->insertGetId([
+                'brand_id'          => null,
+                'category_id'       => $categoryId,
+                'subcategory'       => $validated['subcategory'],
+                'type'              => 'simple',
+                'name'              => $validated['name'],
+                'slug'              => $this->uniqueSlug($validated['name']),
+                'model_number'      => $validated['model_number'],
+                'short_description' => $validated['short_description'],
+                'description'       => $validated['full_description'],
+                'image_url'         => $validated['image_url'],
+                'flight_time'       => $validated['flight_time'],
+                'drone_id'          => $validated['drone_id'],
+                'specs'             => json_encode($validated['specs']),
+                'status'            => 'active',
+                'visibility_mode'   => 'public',
+                'created_at'        => now(),
+                'updated_at'        => now(),
+            ]);
+
+            $variantId = DB::table('product_variants')->insertGetId([
+                'product_id'   => $productId,
+                'sku'          => $validated['sku'],
+                'name'         => $validated['name'],
+                'stock_qty'    => $validated['stock'],
+                'status'       => 'active',
+                'sort'         => 0,
+                'created_at'   => now(),
+                'updated_at'   => now(),
+            ]);
+
+            $this->syncPricesAndVisibility($productId, $variantId, $validated);
+
+            return $productId;
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Product created successfully',
+            'id'      => 'p-' . $productId,
+        ], 201);
+    }
+
+    /**
+     * Admin EDIT an existing product.
+     */
+    public function update(Request $request, $id)
+    {
+        $cleanId = str_replace('p-', '', $id);
+
+        $exists = DB::table('products')->where('id', $cleanId)->whereNull('deleted_at')->first();
+
+        if (!$exists) {
+            return response()->json(['success' => false, 'message' => 'Product not found'], 404);
+        }
+
+        $validated = $this->validateProduct($request, (int) $cleanId);
+
+        if ($validated instanceof \Illuminate\Http\JsonResponse) {
+            return $validated;
+        }
+
+        DB::transaction(function () use ($cleanId, $request, $validated) {
+            $categoryId = $this->resolveCategoryId($validated['category']);
+
+            DB::table('products')->where('id', $cleanId)->update([
+                'category_id'       => $categoryId,
+                'subcategory'       => $validated['subcategory'],
+                'name'              => $validated['name'],
+                'model_number'      => $validated['model_number'],
+                'short_description' => $validated['short_description'],
+                'description'       => $validated['full_description'],
+                'image_url'         => $validated['image_url'],
+                'flight_time'       => $validated['flight_time'],
+                'drone_id'          => $validated['drone_id'],
+                'specs'             => json_encode($validated['specs']),
+                'status'            => 'active',
+                'updated_at'        => now(),
+            ]);
+
+            $variant = DB::table('product_variants')
+                ->where('product_id', $cleanId)
+                ->whereNull('deleted_at')
+                ->orderBy('id')
+                ->first();
+
+            if (!$variant) {
+                $variantId = DB::table('product_variants')->insertGetId([
+                    'product_id'   => $cleanId,
+                    'sku'          => $validated['sku'],
+                    'name'         => $validated['name'],
+                    'stock_qty'    => $validated['stock'],
+                    'status'       => 'active',
+                    'created_at'   => now(),
+                    'updated_at'   => now(),
+                ]);
+            } else {
+                $variantId = $variant->id;
+
+                DB::table('product_variants')->where('id', $variantId)->update([
+                    'sku'        => $validated['sku'],
+                    'name'       => $validated['name'],
+                    'stock_qty'  => $validated['stock'],
+                    'status'     => 'active',
+                    'updated_at' => now(),
+                ]);
+            }
+
+            $this->syncPricesAndVisibility($cleanId, $variantId, $validated);
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Product updated successfully',
+            'id'      => 'p-' . $cleanId,
+        ]);
+    }
+
+    /**
+     * Admin delete a product (soft delete + clean up prices / visibility).
+     */
+    public function destroy($id)
+    {
+        $cleanId = str_replace('p-', '', $id);
+
+        $product = DB::table('products')->where('id', $cleanId)->first();
+
+        if (!$product) {
+            return response()->json(['success' => false, 'message' => 'Product not found'], 404);
+        }
+
+        DB::transaction(function () use ($cleanId) {
+            $variantIds = DB::table('product_variants')
+                ->where('product_id', $cleanId)
+                ->pluck('id')
+                ->all();
+
+            if ($variantIds) {
+                DB::table('product_prices')->whereIn('variant_id', $variantIds)->delete();
+                DB::table('product_variants')
+                    ->where('product_id', $cleanId)
+                    ->update(['deleted_at' => now(), 'updated_at' => now()]);
+            }
+
+            DB::table('visibility_rules')
+                ->where('visible_type', 'product')
+                ->where('visible_id', $cleanId)
+                ->delete();
+
+            DB::table('products')
+                ->where('id', $cleanId)
+                ->update(['deleted_at' => now(), 'updated_at' => now()]);
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Product removed successfully',
+        ]);
+    }
+
+    /**
+     * Admin bulk import from an Excel sheet.
+     */
+    public function import(Request $request)
+    {
+        if (!$request->hasFile('file')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please attach a spreadsheet file (.xlsx / .csv).'
+            ], 422);
+        }
+
+        $file = $request->file('file');
+        $category = $request->input('category', 'parts');
+
+        try {
+            $spreadsheet = IOFactory::load($file->getRealPath());
+            $rows = $spreadsheet->getActiveSheet()->toArray();
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Could not read the spreadsheet: ' . $e->getMessage()
+            ], 422);
+        }
+
+        $header = array_map(
+            fn ($h) => trim(strtolower((string) preg_replace('/[^a-z0-9]+/i', '_', (string) $h)), '_'),
+            array_shift($rows) ?: []
+        );
+
+        $created = 0;
+        $errors = [];
+
+        foreach ($rows as $index => $row) {
+            if (!array_filter($row, fn ($c) => trim((string) $c) !== '')) {
+                continue;
+            }
+
+            $data = [];
+            foreach ($header as $i => $key) {
+                $data[$key] = $row[$i] ?? '';
+            }
+
+            $name = trim((string) ($data['drone_name'] ?? $data['part_name'] ?? $data['accessory_name'] ?? $data['product_name'] ?? $data['name'] ?? ''));
+
+            if ($name === '') {
+                $errors[] = 'Row ' . ($index + 2) . ': name is missing.';
+                continue;
+            }
+
+            $normal = $this->priceToCents($data['retail_normal_price_aud'] ?? $data['price_aud'] ?? $data['price'] ?? 0);
+            $wholesale = $this->priceToCentsOrNull($data['wholesale_price_aud'] ?? null);
+            $agent = $this->priceToCentsOrNull($data['service_agent_price_aud'] ?? null);
+
+            if ($normal <= 0) {
+                $errors[] = 'Row ' . ($index + 2) . ': retail price is missing.';
+                continue;
+            }
+
+            $roles = $this->parseRoles($data['visible_to_normal_wholesale_agent'] ?? $data['visible_to'] ?? 'normal,wholesale,agent');
+
+            $discountPercent = (float) ($data['discount_percent'] ?? $data['discount'] ?? 0);
+            $salePrice = $normal;
+
+            if ($discountPercent > 0) {
+                $salePrice = (int) round($normal * (1 - $discountPercent / 100));
+            }
+
+            $sku = trim((string) ($data['drone_model_number'] ?? $data['part_number_sku'] ?? $data['accessory_number_sku'] ?? $data['sku'] ?? ''));
+            $sku = $sku !== '' ? $sku : 'DH-SKU-' . strtoupper(Str::random(8));
+
+            $subcategory = trim((string) ($data['subcategory'] ?? ''));
+            $compatibleDrone = trim((string) ($data['compatible_drone'] ?? ''));
+            $componentSection = trim((string) ($data['drone_component_section'] ?? ''));
+
+            $droneId = null;
+            if ($compatibleDrone !== '') {
+                $drone = DB::table('products')
+                    ->whereNull('deleted_at')
+                    ->where('name', 'like', '%' . $compatibleDrone . '%')
+                    ->orderBy('id')
+                    ->first();
+
+                if ($drone) {
+                    $droneId = $drone->id;
+                }
+            }
+
+            $payload = [
+                'name'              => $name,
+                'sku'               => $sku,
+                'model_number'      => $sku,
+                'category'          => $category,
+                'subcategory'       => $subcategory ?: $componentSection,
+                'price_normal'      => $normal,
+                'price_wholesale'   => $wholesale,
+                'price_agent'       => $agent,
+                'discount_type'     => $discountPercent > 0 ? 'percentage' : 'none',
+                'discount_value'    => $discountPercent,
+                'sale_price_cents'  => $salePrice,
+                'stock'             => (int) ($data['stock_units'] ?? $data['stock'] ?? 10),
+                'short_description' => trim((string) ($data['short_description'] ?? '')),
+                'full_description'  => trim((string) ($data['full_description'] ?? '')),
+                'image_url'         => trim((string) ($data['image_url'] ?? '')),
+                'flight_time'       => trim((string) ($data['max_flight_time'] ?? '')),
+                'drone_id'          => $droneId,
+                'visibility_roles'  => $roles,
+                'specs'             => [],
+            ];
+
+            $productId = DB::transaction(function () use ($payload) {
+                $categoryId = $this->resolveCategoryId($payload['category']);
+
+                $productId = DB::table('products')->insertGetId([
+                    'category_id'       => $categoryId,
+                    'subcategory'       => $payload['subcategory'] ?: null,
+                    'type'              => 'simple',
+                    'name'              => $payload['name'],
+                    'slug'              => $this->uniqueSlug($payload['name']),
+                    'model_number'      => $payload['model_number'],
+                    'short_description' => $payload['short_description'],
+                    'description'       => $payload['full_description'],
+                    'image_url'         => $payload['image_url'] ?: null,
+                    'flight_time'       => $payload['flight_time'] ?: null,
+                    'drone_id'          => $payload['drone_id'],
+                    'specs'             => json_encode([]),
+                    'status'            => 'active',
+                    'visibility_mode'   => 'public',
+                    'created_at'        => now(),
+                    'updated_at'        => now(),
+                ]);
+
+                $variantId = DB::table('product_variants')->insertGetId([
+                    'product_id'   => $productId,
+                    'sku'          => $payload['sku'],
+                    'name'         => $payload['name'],
+                    'stock_qty'    => $payload['stock'],
+                    'status'       => 'active',
+                    'created_at'   => now(),
+                    'updated_at'   => now(),
+                ]);
+
+                $this->syncPricesAndVisibility($productId, $variantId, $payload);
+
+                return $productId;
+            });
+
+            $created++;
+        }
+
+        return response()->json([
+            'success'  => true,
+            'message'  => "Imported {$created} product(s).",
+            'imported' => $created,
+            'errors'   => $errors,
+        ], 201);
+    }
+
+    // ─────────────────────────────────────────────
+    // Internals
+    // ─────────────────────────────────────────────
+
+    /**
+     * Validate + normalise the product payload coming from the admin forms.
+     */
+    private function validateProduct(Request $request, ?int $ignoreProductId = null)
+    {
         $validator = Validator::make($request->all(), [
-            'name'        => 'required|string|max:255',
-            'price'       => 'required|numeric|min:0',
-            'stock'       => 'nullable|integer|min:0',
-            'category_id' => 'nullable|integer',
-            'image'       => 'nullable|file|mimes:jpeg,png,jpg,webp,svg|max:10240',
-            'image_url'   => 'nullable|string',
-            'type'        => 'nullable|string|in:drone,part,accessory,combo',
-            'description' => 'nullable|string',
+            'name'              => 'required|string|max:255',
+            'sku'               => 'nullable|string|max:255',
+            'model_number'      => 'nullable|string|max:255',
+            'category'          => 'required|string|max:255',
+            'subcategory'       => 'nullable|string|max:255',
+            'price_normal'      => 'required|numeric|min:0',
+            'price_wholesale'   => 'nullable|numeric|min:0',
+            'price_agent'       => 'nullable|numeric|min:0',
+            'discount_type'     => 'nullable|in:none,percentage,fixed',
+            'discount_value'    => 'nullable|numeric|min:0',
+            'sale_price_cents'  => 'nullable|numeric|min:0',
+            'stock'             => 'nullable|integer|min:0',
+            'short_description' => 'nullable|string',
+            'full_description'  => 'nullable|string',
+            'image_url'         => 'nullable|string|max:500',
+            'image'             => 'nullable|file|mimes:jpeg,png,jpg,webp,svg|max:10240',
+            'flight_time'       => 'nullable|string|max:255',
+            'drone_id'          => 'nullable|integer',
+            'visibility_roles'  => 'nullable|array',
+            'visibility_roles.*' => 'in:normal,wholesale,agent',
+            'specs'             => 'nullable|array',
         ]);
 
         if ($validator->fails()) {
             return response()->json([
                 'success' => false,
                 'message' => $validator->errors()->first(),
-                'errors'  => $validator->errors()
+                'errors'  => $validator->errors(),
             ], 422);
         }
 
-        $imageUrl = $request->input('image_url', '/drone.png');
+        $data = $validator->validated();
+
+        $imageUrl = trim((string) ($data['image_url'] ?? ''));
 
         if ($request->hasFile('image')) {
             $path = $request->file('image')->store('products', 'public');
             $imageUrl = '/storage/' . $path;
         }
 
-        $type = $request->input('type', 'part');
+        $sku = trim((string) ($data['sku'] ?? '')) ?: trim((string) ($data['model_number'] ?? ''));
+        $sku = $sku !== '' ? $sku : 'DH-SKU-' . strtoupper(Str::random(8));
 
-        if ($type === 'drone') {
-            $droneId = DB::table('drones')->insertGetId([
-                'drone_category_id' => 1,
-                'model_name'        => $request->name,
-                'model_code'        => strtoupper(Str::slug($request->name)),
-                'serial_number'     => 'DH-AU-' . rand(10000, 99999),
-                'registration_number' => 'VH-DH' . rand(100, 999),
-                'purchase_date'     => now()->toDateString(),
-                'purchased_from'    => 'DroneHub Mackay Hub',
-                'warranty_expires'  => now()->addYears(2)->toDateString(),
-                'warranty_status'   => 'Active',
-                'warranty_remaining'=> '24 Months',
-                'firmware_version'  => 'v01.04.0500',
-                'firmware_status'   => 'Latest',
-                'next_service_due'  => now()->addMonths(6)->toDateString(),
-                'last_serviced'     => now()->subMonths(1)->toDateString(),
-                'flight_hours'      => '0.0 hrs',
-                'battery_sets'      => '4 Sets',
-                'image_url'         => $imageUrl,
-                'specs'             => json_encode([
-                    ['label' => 'Payload Capacity', 'value' => '40 L / 50 kg'],
-                    ['label' => 'Spray Width', 'value' => '11 m'],
-                    ['label' => 'Radar Range', 'value' => '50 m Omnidirectional'],
-                ]),
-                'dashboard_stats'   => json_encode([]),
-                'component_health'  => json_encode([]),
-                'accessories'       => json_encode([]),
-                'technical_specifications' => json_encode([]),
-                'created_at'        => now(),
-                'updated_at'        => now(),
-            ]);
+        // SKU must be unique across the catalogue.
+        $skuTaken = DB::table('product_variants')
+            ->where('sku', $sku)
+            ->when($ignoreProductId, fn ($q) => $q->whereNotIn('product_id', [$ignoreProductId]))
+            ->exists();
 
+        if ($skuTaken) {
             return response()->json([
-                'success' => true,
-                'message' => 'Drone created successfully',
-                'id'      => 'd-' . $droneId
-            ], 201);
+                'success' => false,
+                'message' => "The SKU '{$sku}' is already used by another product. Please choose a different one.",
+            ], 422);
         }
 
-        // Otherwise insert into dealer_products
-        $id = DB::table('dealer_products')->insertGetId([
-            'category_id'    => $request->input('category_id', 1),
-            'name'           => $request->name,
-            'price'          => $request->price,
-            'price_dealer_a' => $request->price,
-            'price_dealer_b' => round($request->price * 0.95, 2),
-            'stock'          => $request->input('stock', 10),
-            'image_url'      => $imageUrl,
-            'status'         => 'active',
-            'created_at'     => now(),
-            'updated_at'     => now(),
-        ]);
+        $roles = $data['visibility_roles'] ?? ['normal', 'wholesale', 'agent'];
+        $roles = is_array($roles) && count($roles) > 0 ? array_values(array_unique($roles)) : ['normal'];
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Product created successfully',
-            'id'      => 'p-' . $id
-        ], 201);
+        $normalCents = (int) round(((float) $data['price_normal']) * 100);
+
+        $discountType = $data['discount_type'] ?? 'none';
+        $discountValue = (float) ($data['discount_value'] ?? 0);
+        $saleCents = isset($data['sale_price_cents']) && $data['sale_price_cents'] > 0
+            ? (int) $data['sale_price_cents']
+            : $normalCents;
+
+        if ($discountType === 'percentage' && $discountValue > 0) {
+            $saleCents = (int) round($normalCents * (1 - $discountValue / 100));
+        } elseif ($discountType === 'fixed' && $discountValue > 0) {
+            $saleCents = max(0, $normalCents - (int) round($discountValue * 100));
+        }
+
+        return [
+            'name'              => $data['name'],
+            'sku'               => $sku,
+            'model_number'      => $data['model_number'] ?? $sku,
+            'category'          => $data['category'],
+            'subcategory'       => $data['subcategory'] ?? null,
+            'price_normal'      => $normalCents,
+            'price_wholesale'   => isset($data['price_wholesale']) && $data['price_wholesale'] !== null && $data['price_wholesale'] !== ''
+                ? (int) round(((float) $data['price_wholesale']) * 100)
+                : null,
+            'price_agent'       => isset($data['price_agent']) && $data['price_agent'] !== null && $data['price_agent'] !== ''
+                ? (int) round(((float) $data['price_agent']) * 100)
+                : null,
+            'sale_price_cents'  => $saleCents,
+            'discount_type'     => $discountType,
+            'discount_value'    => $discountValue,
+            'stock'             => (int) ($data['stock'] ?? 10),
+            'short_description' => $data['short_description'] ?? '',
+            'full_description'  => $data['full_description'] ?? '',
+            'image_url'         => $imageUrl,
+            'flight_time'       => $data['flight_time'] ?? null,
+            'drone_id'          => $data['drone_id'] ?? null,
+            'visibility_roles'  => $roles,
+            'specs'             => $data['specs'] ?? [],
+        ];
     }
 
     /**
-     * Admin delete product
+     * Write the per-group price rows and visibility rules.
+     *
+     * A group only receives a price row when the admin selected it, so
+     * "which roles can buy this product" is defined in exactly one place.
      */
-    public function destroy($id)
+    private function syncPricesAndVisibility(int $productId, int $variantId, array $data): void
     {
-        if (str_starts_with($id, 'd-')) {
-            $cleanId = str_replace('d-', '', $id);
-            DB::table('drones')->where('id', $cleanId)->delete();
-        } else {
-            $cleanId = str_replace('p-', '', $id);
-            DB::table('dealer_products')->where('id', $cleanId)->delete();
+        $roles = $data['visibility_roles'];
+
+        $normalCents = $data['price_normal'];
+        $saleCents = $data['sale_price_cents'];
+
+        $wholesaleCents = $data['price_wholesale'] ?? null;
+        $agentCents = $data['price_agent'] ?? null;
+
+        if (in_array('wholesale', $roles, true) && $wholesaleCents === null) {
+            $wholesaleCents = (int) round($normalCents * 0.88);
         }
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Product removed successfully'
+        if (in_array('agent', $roles, true) && $agentCents === null) {
+            $agentCents = (int) round($normalCents * 0.80);
+        }
+
+        // Remove price rows for groups that are no longer offered.
+        DB::table('product_prices')
+            ->where('variant_id', $variantId)
+            ->whereNotIn('customer_group_id', $this->groupIdsFor($roles))
+            ->delete();
+
+        if (in_array('normal', $roles, true)) {
+            $this->upsertPrice($variantId, PricingService::GROUP_IDS['retail'], $normalCents, $saleCents);
+        }
+
+        if (in_array('wholesale', $roles, true) && $wholesaleCents !== null) {
+            $this->upsertPrice($variantId, PricingService::GROUP_IDS['wholesale'], $wholesaleCents, null);
+        }
+
+        if (in_array('agent', $roles, true) && $agentCents !== null) {
+            $this->upsertPrice($variantId, PricingService::GROUP_IDS['agent'], $agentCents, null);
+        }
+
+        // Visibility rules mirror the selected roles.
+        DB::table('visibility_rules')
+            ->where('visible_type', 'product')
+            ->where('visible_id', $productId)
+            ->delete();
+
+        foreach ($this->groupIdsFor($roles) as $groupId) {
+            DB::table('visibility_rules')->insert([
+                'visible_type'      => 'product',
+                'visible_id'        => $productId,
+                'customer_group_id' => $groupId,
+                'created_at'        => now(),
+                'updated_at'        => now(),
+            ]);
+        }
+    }
+
+    private function upsertPrice(int $variantId, int $groupId, int $priceCents, ?int $saleCents): void
+    {
+        $existing = DB::table('product_prices')
+            ->where('variant_id', $variantId)
+            ->where('customer_group_id', $groupId)
+            ->where('min_qty', 1)
+            ->first();
+
+        $payload = [
+            'price_cents'       => $priceCents,
+            'sale_price_cents'  => $saleCents,
+            'sale_starts_at'    => $saleCents ? now() : null,
+            'sale_ends_at'      => $saleCents ? now()->addYear() : null,
+            'updated_at'        => now(),
+        ];
+
+        if ($existing) {
+            DB::table('product_prices')->where('id', $existing->id)->update($payload);
+            return;
+        }
+
+        DB::table('product_prices')->insert($payload + [
+            'variant_id'        => $variantId,
+            'customer_group_id' => $groupId,
+            'min_qty'           => 1,
+            'created_at'        => now(),
         ]);
     }
 
-    private function resolveImageUrl($path)
+    private function groupIdsFor(array $roles): array
     {
-        if (!$path) return '/drone.png';
-        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
-            return $path;
+        $ids = [];
+
+        foreach ($roles as $role) {
+            if (isset(PricingService::ROLE_GROUP_IDS[$role])) {
+                $ids[] = PricingService::ROLE_GROUP_IDS[$role];
+            }
         }
-        if (str_starts_with($path, '/storage/')) {
-            return 'http://127.0.0.1:8000' . $path;
+
+        return array_values(array_unique($ids)) ?: [PricingService::GROUP_IDS['retail']];
+    }
+
+    private function resolveCategoryId(string $slug): ?int
+    {
+        $category = DB::table('categories')
+            ->where('slug', $slug)
+            ->whereNull('deleted_at')
+            ->first();
+
+        if ($category) {
+            return $category->id;
         }
-        return $path;
+
+        // Fall back to a top-level category of the matching type.
+        $type = match ($slug) {
+            'drones'      => 'drone',
+            'parts'       => 'part',
+            'accessories' => 'accessory',
+            'combos'      => 'combo',
+            default       => null,
+        };
+
+        if ($type) {
+            $fallback = DB::table('categories')
+                ->where('type', $type)
+                ->whereNull('parent_id')
+                ->whereNull('deleted_at')
+                ->orderBy('id')
+                ->first();
+
+            if ($fallback) {
+                return $fallback->id;
+            }
+        }
+
+        return null;
+    }
+
+    private function uniqueSlug(string $name): string
+    {
+        $base = Str::slug($name) ?: 'product';
+        $slug = $base;
+        $i = 1;
+
+        while (DB::table('products')->where('slug', $slug)->exists()) {
+            $i++;
+            $slug = $base . '-' . $i;
+        }
+
+        return $slug;
+    }
+
+    private function parseRoles($raw): array
+    {
+        $raw = strtolower((string) $raw);
+        $roles = [];
+
+        if (str_contains($raw, 'normal') || str_contains($raw, 'retail') || str_contains($raw, 'all')) {
+            $roles[] = 'normal';
+        }
+        if (str_contains($raw, 'wholesale') || str_contains($raw, 'dealer') || str_contains($raw, 'all')) {
+            $roles[] = 'wholesale';
+        }
+        if (str_contains($raw, 'agent') || str_contains($raw, 'service') || str_contains($raw, 'all')) {
+            $roles[] = 'agent';
+        }
+
+        return $roles ?: ['normal'];
+    }
+
+    private function priceToCents($value): int
+    {
+        return (int) ($this->priceToCentsOrNull($value) ?? 0);
+    }
+
+    /**
+     * Convert a spreadsheet price cell to cents.
+     * Returns null when the cell is empty so the tier price can be derived
+     * from the retail price instead of being stored as zero.
+     */
+    private function priceToCentsOrNull($value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $num = (float) preg_replace('/[$,\s]/', '', (string) $value);
+
+        return $num > 0 ? (int) round($num * 100) : null;
+    }
+
+    private function groupId(Request $request): int
+    {
+        $group = $request->attributes->get('customer_group');
+
+        return (int) ($group->id ?? 1);
+    }
+
+    private function isAdmin(Request $request): bool
+    {
+        $user = $request->user();
+
+        return $user && in_array($user->role, ['super_admin', 'admin', 'operations'], true);
     }
 }

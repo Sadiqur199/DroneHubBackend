@@ -12,6 +12,8 @@ class DatabaseSeeder extends Seeder
     {
         $this->call([
             CustomerGroupSeeder::class,
+            CategorySeeder::class,
+            DemoCatalogSeeder::class,
         ]);
 
         // Default Super Admin User
@@ -30,6 +32,30 @@ class DatabaseSeeder extends Seeder
                 'updated_at' => now(),
             ]
         );
+
+        // Demo customer accounts — one per customer group, for role testing.
+        $demoCustomers = [
+            ['email' => 'retail@dronehub.com.au',  'name' => 'Retail Test Customer',  'role' => 'retail',    'group' => 1, 'password' => 'Retail123!'],
+            ['email' => 'wholesale@dronehub.com.au','name' => 'Wholesale Test Dealer', 'role' => 'wholesale', 'group' => 2, 'password' => 'Wholesale123!'],
+            ['email' => 'agent@dronehub.com.au',    'name' => 'Service Agent Test',    'role' => 'agent',     'group' => 3, 'password' => 'Agent123!'],
+        ];
+
+        foreach ($demoCustomers as $customer) {
+            DB::table('users')->updateOrInsert(
+                ['email' => $customer['email']],
+                [
+                    'name'              => $customer['name'],
+                    'phone'             => '1300 544 968',
+                    'password'          => Hash::make($customer['password']),
+                    'customer_group_id' => $customer['group'],
+                    'role'              => $customer['role'],
+                    'status'            => 'active',
+                    'email_verified_at' => now(),
+                    'created_at'        => now(),
+                    'updated_at'        => now(),
+                ]
+            );
+        }
 
         // Initial Hero Banner Setup
         DB::table('hero_banners')->updateOrInsert(

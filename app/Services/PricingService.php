@@ -2,119 +2,147 @@
 
 namespace App\Services;
 
-use App\Models\CustomerGroup;
-use App\Models\ProductVariant;
-use App\Models\User;
+use Illuminate\Support\Facades\DB;
 
+/**
+ * Resolves the price a given customer group (retail / wholesale / agent)
+ * must pay for a product variant.
+ *
+ * Precedence:
+ * 1. Quantity tier row for the group (highest matching min_qty wins)
+ * 2. Active promotion window on that row (sale_price_cents)
+ * 3. No row for the group => the product is not offered to that group
+ */
 class PricingService
 {
-    /**
-     * Calculate resolved price in cents for a product variant and user group.
-     * Precedence:
-     * 1. Active Promotion / Special Campaign (Hook ready for Phase 7)
-     * 2. Customer Group Specific Price (Wholesale / Service Agent / Retail)
-     * 3. Quantity Tier Discount (Bulk wholesale orders)
-     * 4. Default Variant Retail Price (Fallback)
-     *
-     * @param mixed $variant
-     * @param User|null $user
-     * @param int $qty
-     * @return array{
-     *    price_cents: int,
-     *    original_price_cents: int,
-     *    gst_cents: int,
-     *    is_sale: bool,
-     *    customer_group_id: int|null,
-     *    group_slug: string
-     * }
-     */
-    public static function priceFor($variant, ?User $user = null, int $qty = 1): array
-    {
-        $group = self::resolveGroup($user);
-        $groupId = $group ? $group->id : 1;
-        $groupSlug = $group ? $group->slug : 'retail';
+    public const GROUP_IDS = [
+        'retail'    => 1,
+        'wholesale' => 2,
+        'agent'     => 3,
+    ];
 
-        // Base retail price fallback (stored in cents)
-        $defaultRetailCents = $variant->price_cents ?? 199900; // e.g. $1,999.00 AUD
-        $resolvedPriceCents = $defaultRetailCents;
-        $originalPriceCents = $defaultRetailCents;
+    /**
+     * Storefront role names -> customer group id.
+     * The shop speaks "normal", the database speaks "retail".
+     */
+    public const ROLE_GROUP_IDS = [
+        'normal'    => 1,
+        'wholesale' => 2,
+        'agent'     => 3,
+    ];
+
+    public const GROUP_LABELS = [
+        1 => 'Retail',
+        2 => 'Wholesale',
+        3 => 'Service Agent',
+    ];
+
+    /**
+     * Map a group slug to its primary key.
+     */
+    public static function groupIdFor(?string $slug): int
+    {
+        return self::GROUP_IDS[$slug ?? 'retail']
+            ?? self::ROLE_GROUP_IDS[$slug ?? 'normal']
+            ?? 1;
+    }
+
+    /**
+     * Reverse lookup: customer group id -> storefront role name.
+     */
+    public static function roleKeyFor(int $groupId): ?string
+    {
+        $key = array_search($groupId, self::ROLE_GROUP_IDS, true);
+
+        return $key === false ? null : $key;
+    }
+
+    /**
+     * Resolve the price for one variant + one customer group.
+     */
+    public static function priceFor(int $variantId, int $groupId, int $qty = 1): ?array
+    {
+        $row = DB::table('product_prices')
+            ->where('variant_id', $variantId)
+            ->where('customer_group_id', $groupId)
+            ->where('min_qty', '<=', max(1, $qty))
+            ->orderByDesc('min_qty')
+            ->first();
+
+        if (!$row) {
+            return null;
+        }
+
+        return self::applySaleWindow($row, $groupId);
+    }
+
+    /**
+     * Resolve every group price for a variant.
+     * Groups without a price row are simply absent from the result.
+     *
+     * @return array<int, array{price_cents:int,original_price_cents:int,gst_cents:int,is_sale:bool,min_qty:int}>
+     */
+    public static function pricesForVariant(int $variantId): array
+    {
+        $rows = DB::table('product_prices')
+            ->where('variant_id', $variantId)
+            ->orderBy('customer_group_id')
+            ->orderBy('min_qty')
+            ->get();
+
+        $resolved = [];
+
+        foreach ($rows as $row) {
+            // Keep the highest min_qty tier per group.
+            if (isset($resolved[$row->customer_group_id])) {
+                continue;
+            }
+
+            $resolved[$row->customer_group_id] = self::applySaleWindow($row, $row->customer_group_id);
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * Apply the promotion window, if the row carries one.
+     */
+    private static function applySaleWindow(object $row, int $groupId): array
+    {
+        $now = now();
+        $priceCents = (int) $row->price_cents;
+        $originalCents = $priceCents;
         $isSale = false;
 
-        // Check if variant has customer group prices loaded
-        if (isset($variant->prices) && is_iterable($variant->prices)) {
-            // Filter by current customer group and matching min_qty
-            $matchedPrices = collect($variant->prices)
-                ->filter(function ($item) use ($groupId, $qty) {
-                    return $item->customer_group_id == $groupId && $qty >= ($item->min_qty ?? 1);
-                })
-                ->sortByDesc('min_qty');
+        $hasSalePrice = !empty($row->sale_price_cents);
+        $started = empty($row->sale_starts_at) || $now->gte($row->sale_starts_at);
+        $notEnded = empty($row->sale_ends_at) || $now->lte($row->sale_ends_at);
 
-            $bestPriceRow = $matchedPrices->first();
-
-            if ($bestPriceRow) {
-                // Check for sale price within active date window
-                $now = now();
-                $hasActiveSale = !empty($bestPriceRow->sale_price_cents)
-                    && (empty($bestPriceRow->sale_starts_at) || $now->gte($bestPriceRow->sale_starts_at))
-                    && (empty($bestPriceRow->sale_ends_at) || $now->lte($bestPriceRow->sale_ends_at));
-
-                if ($hasActiveSale) {
-                    $resolvedPriceCents = $bestPriceRow->sale_price_cents;
-                    $originalPriceCents = $bestPriceRow->price_cents;
-                    $isSale = true;
-                } else {
-                    $resolvedPriceCents = $bestPriceRow->price_cents;
-                    $originalPriceCents = $bestPriceRow->price_cents;
-                }
-            }
-        } else {
-            // Dynamic group discount simulation if raw prices relation not hydrated
-            if ($groupSlug === 'wholesale') {
-                // 20% B2B Wholesale Tier discount
-                $resolvedPriceCents = (int) round($defaultRetailCents * 0.80);
-                $originalPriceCents = $defaultRetailCents;
-                $isSale = true;
-            } elseif ($groupSlug === 'agent') {
-                // 25% Certified Service Agent / Parts discount
-                $resolvedPriceCents = (int) round($defaultRetailCents * 0.75);
-                $originalPriceCents = $defaultRetailCents;
-                $isSale = true;
-            }
+        if ($hasSalePrice && $started && $notEnded) {
+            $priceCents = (int) $row->sale_price_cents;
+            $isSale = true;
         }
-
-        // Australian GST (10% inclusive calculation: GST = Total / 11)
-        $gstCents = (int) round($resolvedPriceCents / 11);
 
         return [
-            'price_cents' => $resolvedPriceCents,
-            'original_price_cents' => $originalPriceCents,
-            'gst_cents' => $gstCents,
-            'is_sale' => $isSale,
-            'customer_group_id' => $groupId,
-            'group_slug' => $groupSlug,
+            'price_cents'          => $priceCents,
+            'original_price_cents' => $originalCents,
+            'gst_cents'            => (int) round($priceCents / 11),
+            'is_sale'              => $isSale,
+            'min_qty'              => (int) $row->min_qty,
+            'customer_group_id'    => $groupId,
         ];
     }
 
     /**
-     * Resolve customer group for current user or default to Retail.
+     * Australian GST (10% inclusive): GST component = Total / 11.
      */
-    protected static function resolveGroup(?User $user): ?object
+    public static function gstCents(int $priceCents): int
     {
-        if ($user && isset($user->customerGroup)) {
-            return $user->customerGroup;
-        }
-
-        // Default Retail group
-        return (object) [
-            'id' => 1,
-            'name' => 'Retail',
-            'slug' => 'retail',
-            'is_default' => true,
-        ];
+        return (int) round($priceCents / 11);
     }
 
     /**
-     * Format cents into Australian Dollar string ($1,299.00 AUD)
+     * Format cents into an Australian Dollar string.
      */
     public static function formatAud(int $cents): string
     {

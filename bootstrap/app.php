@@ -17,8 +17,15 @@ return Application::configure(basePath: dirname(__DIR__))
             \App\Http\Middleware\ResolveCustomerGroup::class,
         ]);
 
+        $middleware->api(append: [
+            \App\Http\Middleware\ResolveCustomerGroup::class,
+            \App\Http\Middleware\ResolveOptionalCustomer::class,
+        ]);
+
         $middleware->alias([
-            'visible' => \App\Http\Middleware\EnsureVisible::class,
+            'auth.token'  => \App\Http\Middleware\AuthenticateToken::class,
+            'role.admin'  => \App\Http\Middleware\RequireAdmin::class,
+            'visible'     => \App\Http\Middleware\EnsureVisible::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
