@@ -10,7 +10,7 @@ use App\Http\Controllers\Api\CategoryController;
 
 /*
 |--------------------------------------------------------------------------
-| API Routes — DroneHub Australia (Prefix: /api/v1)
+| API Routes — DroneHab Australia (Prefix: /api/v1)
 |--------------------------------------------------------------------------
 |
 | Public endpoints resolve the caller's customer group (guest => retail) and

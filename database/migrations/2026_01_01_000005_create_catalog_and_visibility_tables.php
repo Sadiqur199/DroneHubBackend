@@ -140,7 +140,7 @@ return new class extends Migration
             $table->foreignId('variant_id')->nullable()->constrained('product_variants')->nullOnDelete();
             $table->string('serial_number')->unique();
             $table->date('purchase_date');
-            $table->string('purchased_from')->default('DroneHub Australia');
+            $table->string('purchased_from')->default('DroneHab Australia');
             $table->date('start_date');
             $table->date('end_date');
             $table->string('proof_path')->nullable();

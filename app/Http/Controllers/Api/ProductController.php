@@ -66,6 +66,25 @@ class ProductController extends Controller
 
         $price = PricingService::priceFor($variant->id, $groupId);
 
+        // Fallback for wholesale (group 2) or agent (group 3) from retail
+        if (!$price && ($groupId === 2 || $groupId === 3)) {
+            $retailPrice = PricingService::priceFor($variant->id, 1);
+            if ($retailPrice) {
+                $discountFactor = ($groupId === 2) ? 0.88 : 0.80;
+                $tierCents = (int) round($retailPrice['price_cents'] * $discountFactor);
+                $price = [
+                    'price_cents'          => $tierCents,
+                    'original_price_cents' => $retailPrice['original_price_cents'],
+                    'gst_cents'            => (int) round($tierCents / 11),
+                    'is_sale'              => $retailPrice['is_sale'],
+                ];
+            }
+        }
+
+        if (!$price && !$isAdmin) {
+            $price = PricingService::priceFor($variant->id, 1);
+        }
+
         if (!$price && !$isAdmin) {
             // This product is not offered to the caller's group.
             return response()->json(['success' => false, 'message' => 'Product not found'], 404);

@@ -92,7 +92,7 @@ class AuthController extends Controller
         if ($user->status !== 'active') {
             return response()->json([
                 'success' => false,
-                'message' => 'This account is not active. Please contact DroneHub.'
+                'message' => 'This account is not active. Please contact DroneHab.'
             ], 403);
         }
 

@@ -4,18 +4,18 @@ use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
-| Web Routes - DroneHub Australia
+| Web Routes - DroneHab Australia
 |--------------------------------------------------------------------------
 */
 
 Route::get('/', function () {
     return response()->json([
         'status' => 'online',
-        'application' => 'DroneHub Australia API & Backend Engine',
+        'application' => 'DroneHab Australia API & Backend Engine',
         'market' => 'Australia (AUD, 10% GST Included)',
         'base' => 'Mackay, Queensland',
         'phone' => '1300 544 968',
-        'email' => 'enquiries@dronehub.com.au',
+        'email' => 'enquiries@dronehab.com.au',
         'service_areas' => ['Bowen Basin', 'QLD', 'NSW', 'VIC'],
         'casa_accreditation' => 'CASA.ReOC.8842 Certified',
     ]);

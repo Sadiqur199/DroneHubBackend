@@ -18,9 +18,9 @@ class DatabaseSeeder extends Seeder
 
         // Default Super Admin User
         DB::table('users')->updateOrInsert(
-            ['email' => 'admin@dronehub.com.au'],
+            ['email' => 'admin@dronehab.com.au'],
             [
-                'name' => 'DroneHub Operations Lead',
+                'name' => 'DroneHab Operations Lead',
                 'username' => 'admin_operations',
                 'phone' => '1300 544 968',
                 'password' => Hash::make('Admin123!Secure'),
@@ -35,9 +35,9 @@ class DatabaseSeeder extends Seeder
 
         // Demo customer accounts — one per customer group, for role testing.
         $demoCustomers = [
-            ['email' => 'retail@dronehub.com.au',  'name' => 'Retail Test Customer',  'role' => 'retail',    'group' => 1, 'password' => 'Retail123!'],
-            ['email' => 'wholesale@dronehub.com.au','name' => 'Wholesale Test Dealer', 'role' => 'wholesale', 'group' => 2, 'password' => 'Wholesale123!'],
-            ['email' => 'agent@dronehub.com.au',    'name' => 'Service Agent Test',    'role' => 'agent',     'group' => 3, 'password' => 'Agent123!'],
+            ['email' => 'retail@dronehab.com.au',  'name' => 'Retail Test Customer',  'role' => 'retail',    'group' => 1, 'password' => 'Retail123!'],
+            ['email' => 'wholesale@dronehab.com.au','name' => 'Wholesale Test Dealer', 'role' => 'wholesale', 'group' => 2, 'password' => 'Wholesale123!'],
+            ['email' => 'agent@dronehab.com.au',    'name' => 'Service Agent Test',    'role' => 'agent',     'group' => 3, 'password' => 'Agent123!'],
         ];
 
         foreach ($demoCustomers as $customer) {
@@ -74,10 +74,10 @@ class DatabaseSeeder extends Seeder
 
         // Store Settings
         $settings = [
-            ['group' => 'general', 'key' => 'store_name', 'value' => json_encode('DroneHub Australia')],
+            ['group' => 'general', 'key' => 'store_name', 'value' => json_encode('DroneHab Australia')],
             ['group' => 'general', 'key' => 'abn', 'value' => json_encode('48 612 908 124')],
             ['group' => 'general', 'key' => 'phone', 'value' => json_encode('1300 544 968')],
-            ['group' => 'general', 'key' => 'email', 'value' => json_encode('enquiries@dronehub.com.au')],
+            ['group' => 'general', 'key' => 'email', 'value' => json_encode('enquiries@dronehab.com.au')],
             ['group' => 'general', 'key' => 'base_city', 'value' => json_encode('Mackay, Queensland')],
             ['group' => 'tax', 'key' => 'gst_percentage', 'value' => json_encode(10)],
             ['group' => 'shipping', 'key' => 'free_shipping_threshold_cents', 'value' => json_encode(50000)], // Free over $500 AUD

@@ -1,6 +1,6 @@
-# DroneHubBackend
+# DroneHabBackend
 
-Backend engine for **DroneHub Australia** — Laravel 11 · PHP 8.3 · MySQL 8 · Redis.
+Backend engine for **DroneHab Australia** — Laravel 11 · PHP 8.3 · MySQL 8 · Redis.
 
 This repository is the **backend only**. The React + Vite storefront lives in its own
 repository: [Sadiqur199/DroneHub-Frontend](https://github.com/Sadiqur199/DroneHub-Frontend).
@@ -122,7 +122,7 @@ are resolved by the `ResolveCustomerGroup` middleware.
 
 ## 🏢 Company
 
-- **Company** — DroneHub Australia · **ABN** 48 612 908 124 (GST Registered)
+- **Company** — DroneHab Australia · **ABN** 48 612 908 124 (GST Registered)
 - **Base** — Cnr Gordon & Gregory Streets, Mackay, Queensland 4740
-- **Phone** — 1300 544 968 · **Email** — enquiries@dronehub.com.au
+- **Phone** — 1300 544 968 · **Email** — enquiries@dronehab.com.au
 - **Accreditation** — CASA.ReOC.8842 Certified Commercial RPAS Operator

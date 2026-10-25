@@ -130,11 +130,32 @@ class CatalogService
                 ? $rules->pluck('customer_group_id')->unique()->values()
                 : $pricedGroups;
 
-            if (!$isAdmin && !$allowedGroups->contains($groupId)) {
+            // Retailer products are always available to all (guest, retail, wholesale, agent).
+            $isAllowed = $isAdmin 
+                || $allowedGroups->contains($groupId) 
+                || $allowedGroups->contains(1) 
+                || $pricedGroups->contains(1);
+
+            if (!$isAllowed) {
                 continue;   // this group may not see this product at all
             }
 
             $resolved = self::resolveGroupPrice($variants, $pricesByVariant, $groupId);
+
+            // If wholesale (group 2) or agent (group 3) has no specific price tier, derive from retail price
+            if ($resolved === null && ($groupId === 2 || $groupId === 3)) {
+                $retailPrice = self::resolveGroupPrice($variants, $pricesByVariant, 1);
+                if ($retailPrice !== null) {
+                    $discountFactor = ($groupId === 2) ? 0.88 : 0.80;
+                    $tierCents = (int) round($retailPrice['price_cents'] * $discountFactor);
+                    $resolved = [
+                        'price_cents'          => $tierCents,
+                        'original_price_cents' => $retailPrice['original_price_cents'],
+                        'gst_cents'            => (int) round($tierCents / 11),
+                        'is_sale'              => $retailPrice['is_sale'],
+                    ];
+                }
+            }
 
             if ($resolved === null && $isAdmin) {
                 // Admins must be able to manage every product, even ones that
@@ -214,7 +235,7 @@ class CatalogService
             'name'               => $product->name,
             'sku'                => $variant->sku,
             'model_number'       => $product->model_number ?: $variant->sku,
-            'brand'              => 'DroneHub Australia',
+            'brand'              => 'DroneHab Australia',
             'slug'               => $product->slug,
             'category'           => $slug,
             'category_name'      => $product->category_name ?: 'General Parts',
@@ -241,16 +262,25 @@ class CatalogService
             'created_at'         => $product->created_at,
         ];
 
-        if (!$isAdmin) {
-            // Customers never receive other tiers' price points.
-            return $payload;
-        }
-
         $allPrices = PricingService::pricesForVariant($variant->id);
 
-        $rolePrices = [];
-        foreach (PricingService::ROLE_GROUP_IDS as $roleKey => $gid) {
-            $rolePrices[$roleKey] = $allPrices[$gid]['price_cents'] ?? null;
+        $retailCents = $allPrices[1]['price_cents'] ?? ($groupId === 1 ? $price['price_cents'] : null);
+        if ($retailCents === null) {
+            $retailCents = $price['price_cents'];
+        }
+        $wholesaleCents = $allPrices[2]['price_cents'] ?? (int) round($retailCents * 0.88);
+        $agentCents = $allPrices[3]['price_cents'] ?? (int) round($retailCents * 0.80);
+
+        $rolePrices = [
+            'normal'    => $retailCents,
+            'wholesale' => $wholesaleCents,
+            'agent'     => $agentCents,
+        ];
+
+        $payload['role_prices'] = $rolePrices;
+
+        if (!$isAdmin) {
+            return $payload;
         }
 
         $visibilityRules = DB::table('visibility_rules')

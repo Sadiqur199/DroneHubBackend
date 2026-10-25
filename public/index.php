@@ -23,10 +23,10 @@ if (file_exists(__DIR__.'/../vendor/autoload.php')) {
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode([
         'status' => 'initialized',
-        'application' => 'DroneHub Australia Backend Service',
-        'company' => 'DroneHub Australia',
+        'application' => 'DroneHab Australia Backend Service',
+        'company' => 'DroneHab Australia',
         'phone' => '1300 544 968',
-        'email' => 'enquiries@dronehub.com.au',
+        'email' => 'enquiries@dronehab.com.au',
         'base' => 'Mackay, Queensland',
         'note' => 'Backend is ready. Run "docker compose up -d" to start PHP 8.3 FPM, MySQL 8, Redis, and workers.',
     ], JSON_PRETTY_PRINT);
